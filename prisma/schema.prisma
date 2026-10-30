@@ -1,0 +1,1193 @@
+// Stellar Family Salon — PostgreSQL schema (Prisma ORM 7)
+//
+// Conventions
+//  • Money is always `Decimal(12,2)` (never floating point).
+//  • Instants are `timestamptz`; calendar dates (attendance, payroll, leave) are `date`
+//    and always represent the *branch-local* calendar day (default Asia/Kolkata).
+//  • Time-of-day values (shift / opening hours) are "HH:mm" strings in branch-local time.
+//  • Weekdays use ISO numbering: 1 = Monday … 7 = Sunday.
+//  • "…ById" stamp columns (createdById, recordedById, …) are intentional soft references
+//    so audit history survives user clean-up. Structural relations are real foreign keys.
+//  • Booking overlap protection is enforced in PostgreSQL with exclusion constraints, added
+//    in the hand-written migration `20261029174500_booking_integrity`.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+enum RoleAudience {
+  ADMIN
+  STAFF
+  CUSTOMER
+}
+
+enum PermissionScope {
+  OWN
+  BRANCH
+  ALL
+}
+
+enum EmploymentStatus {
+  ACTIVE
+  PROBATION
+  ON_LEAVE
+  NOTICE_PERIOD
+  TERMINATED
+}
+
+enum EmploymentType {
+  FULL_TIME
+  PART_TIME
+  CONTRACT
+}
+
+enum ServiceAudience {
+  EVERYONE
+  WOMEN
+  MEN
+  KIDS
+}
+
+enum ResourceType {
+  STYLING_STATION
+  COLOUR_BAR
+  FACIAL_ROOM
+  NAIL_BAR
+  BRIDAL_SUITE
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  CHECKED_IN
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum BookingSource {
+  ONLINE
+  WALK_IN
+  STAFF
+}
+
+enum PaymentMethod {
+  PAY_AT_SALON
+}
+
+enum PaymentStatus {
+  UNPAID
+  PAID
+}
+
+enum AttendanceStatus {
+  PRESENT
+  LATE
+  HALF_DAY
+  ABSENT
+  LEAVE
+}
+
+enum AttendanceSource {
+  SELF_CHECK_IN
+  MANAGER
+  SYSTEM
+}
+
+enum LeaveType {
+  CASUAL
+  SICK
+  ANNUAL
+  UNPAID
+}
+
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum ShiftType {
+  REGULAR
+  MORNING
+  EVENING
+  EXTRA
+  OFF
+}
+
+enum PayrollPeriodStatus {
+  OPEN
+  CLOSED
+}
+
+enum PayrollStatus {
+  PENDING
+  REVIEWED
+  PAID
+}
+
+enum AdjustmentType {
+  ALLOWANCE
+  BONUS
+  DEDUCTION
+}
+
+enum AdjustmentSource {
+  MANUAL
+  ATTENDANCE
+}
+
+enum OfferType {
+  PERCENTAGE
+  FIXED_AMOUNT
+}
+
+enum OfferStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  ARCHIVED
+}
+
+enum OfferAudience {
+  EVERYONE
+  NEW_CUSTOMERS
+  RETURNING_CUSTOMERS
+}
+
+enum RedemptionStatus {
+  APPLIED
+  REVERSED
+}
+
+enum LoyaltyTier {
+  STARLIGHT
+  RADIANT
+  CELESTIAL
+}
+
+enum LoyaltyTxnType {
+  EARN
+  BONUS
+  ADJUSTMENT
+  REVERSAL
+}
+
+enum NotificationType {
+  BOOKING_CONFIRMED
+  BOOKING_CANCELLED
+  BOOKING_RESCHEDULED
+  BOOKING_ASSIGNED
+  BOOKING_UPDATED
+  LEAVE_REQUESTED
+  LEAVE_DECIDED
+  APPROVAL_PENDING
+  SCHEDULE_CHANGED
+  ENQUIRY_RECEIVED
+  OFFER
+  SYSTEM
+}
+
+enum EnquiryType {
+  BRIDAL
+  PARTY
+  FAMILY_GROUP
+  OTHER
+}
+
+enum EnquiryStatus {
+  NEW
+  CONTACTED
+  QUOTED
+  CONFIRMED
+  CLOSED
+}
+
+enum MediaKind {
+  PHOTO
+  PORTRAIT
+  LOGO
+}
+
+enum GalleryCategory {
+  INTERIOR
+  HAIRSTYLE
+  MAKEUP
+  TREATMENT
+  BEFORE_AFTER
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Identity & access
+// (User / Session / Account / Verification follow the Better Auth core schema;
+//  `Session` is the UserSession concept.)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model User {
+  id            String     @id @default(cuid())
+  name          String
+  email         String     @unique
+  emailVerified Boolean    @default(false)
+  image         String?
+  status        UserStatus @default(ACTIVE)
+  statusReason  String?
+  phone         String?
+  lastLoginAt   DateTime?  @db.Timestamptz(3)
+  createdAt     DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime   @updatedAt @db.Timestamptz(3)
+
+  sessions      Session[]
+  accounts      Account[]
+  roles         UserRole[]
+  profile       Profile?
+  employee      EmployeeProfile?
+  customer      CustomerProfile?
+  notifications Notification[]
+  auditEvents   AuditLog[]
+
+  @@index([status])
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  expiresAt DateTime @db.Timestamptz(3)
+  token     String   @unique
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("user_sessions")
+}
+
+model Account {
+  id                    String    @id @default(cuid())
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime? @db.Timestamptz(3)
+  refreshTokenExpiresAt DateTime? @db.Timestamptz(3)
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt             DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@unique([providerId, accountId])
+  @@index([userId])
+  @@map("auth_accounts")
+}
+
+model Verification {
+  id         String   @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime @db.Timestamptz(3)
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([identifier])
+  @@map("auth_verifications")
+}
+
+/// Generic personal details shared by every kind of user.
+model Profile {
+  id          String    @id @default(cuid())
+  userId      String    @unique
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  dateOfBirth DateTime? @db.Date
+  gender      String?
+  addressLine String?
+  city        String?
+  bio         String?
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@map("profiles")
+}
+
+model Role {
+  id                  String         @id @default(cuid())
+  key                 String         @unique
+  name                String
+  description         String?
+  audience            RoleAudience   @default(STAFF)
+  /// Core roles (super_admin, manager, employee, customer): key is immutable and the role cannot be deleted.
+  isSystem            Boolean        @default(false)
+  /// Protected roles (Super Admin): permission set is locked and always evaluates to "everything".
+  isProtected         Boolean        @default(false)
+  isActive            Boolean        @default(true)
+  /// Active users holding this role consume a manager seat (see AppSetting `manager.seatLimit`).
+  occupiesManagerSeat Boolean        @default(false)
+  createdAt           DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime       @updatedAt @db.Timestamptz(3)
+
+  permissions RolePermission[]
+  users       UserRole[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String  @id @default(cuid())
+  /// e.g. `salary.read`
+  key         String  @unique
+  module      String
+  action      String
+  label       String
+  description String?
+
+  roles RolePermission[]
+
+  @@index([module])
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  scope        PermissionScope @default(ALL)
+  role         Role            @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission      @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  updatedAt    DateTime        @updatedAt @db.Timestamptz(3)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+  @@map("role_permissions")
+}
+
+model UserRole {
+  userId       String
+  roleId       String
+  assignedById String?
+  assignedAt   DateTime @default(now()) @db.Timestamptz(3)
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role         Role     @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  @@id([userId, roleId])
+  @@index([roleId])
+  @@map("user_roles")
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  /// Snapshot of the actor's display name at the time of the event.
+  actorName  String?
+  /// Machine key, e.g. `role.permissions.updated`
+  action     String
+  entityType String
+  entityId   String?
+  summary    String
+  metadata   Json?
+  ipAddress  String?
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([createdAt])
+  @@index([entityType, entityId])
+  @@index([actorId])
+  @@index([action])
+  @@map("audit_logs")
+}
+
+/// Small key/value store for typed business settings (manager seat limit, feature switches, …).
+model AppSetting {
+  key         String   @id
+  value       Json
+  description String?
+  updatedById String?
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+
+  @@map("app_settings")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Business structure & website content
+// ─────────────────────────────────────────────────────────────────────────────
+
+model SalonBranch {
+  id           String   @id @default(cuid())
+  slug         String   @unique
+  name         String
+  tagline      String?
+  description  String?
+  phone        String
+  whatsapp     String?
+  email        String
+  addressLine1 String
+  addressLine2 String?
+  city         String
+  state        String
+  postalCode   String
+  country      String   @default("India")
+  mapUrl       String?
+  instagramUrl String?
+  facebookUrl  String?
+  timezone     String   @default("Asia/Kolkata")
+  currency     String   @default("INR")
+  isPrimary    Boolean  @default(false)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @db.Timestamptz(3)
+
+  hours      BusinessHours[]
+  policy     BookingPolicy?
+  employees  EmployeeProfile[]
+  resources  Resource[]
+  bookings   Booking[]
+  shifts     Shift[]
+  attendance Attendance[]
+  customers  CustomerProfile[]
+
+  @@map("salon_branches")
+}
+
+model BusinessHours {
+  id        String      @id @default(cuid())
+  branchId  String
+  branch    SalonBranch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  /// ISO weekday, 1 = Monday … 7 = Sunday
+  weekday   Int
+  opensAt   String
+  closesAt  String
+  isClosed  Boolean     @default(false)
+
+  @@unique([branchId, weekday])
+  @@map("business_hours")
+}
+
+model BookingPolicy {
+  id                      String      @id @default(cuid())
+  branchId                String      @unique
+  branch                  SalonBranch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  /// Granularity of bookable start times.
+  slotIntervalMinutes     Int         @default(15)
+  /// Clean-down buffer held after every appointment.
+  bufferMinutes           Int         @default(10)
+  minLeadTimeMinutes      Int         @default(120)
+  maxAdvanceDays          Int         @default(45)
+  maxBookingMinutes       Int         @default(360)
+  cancellationWindowHours Int         @default(4)
+  rescheduleWindowHours   Int         @default(6)
+  maxReschedules          Int         @default(2)
+  /// When true online bookings are confirmed instantly (except services that require approval).
+  autoConfirmOnline       Boolean     @default(true)
+  cancellationPolicyText  String
+  noShowPolicyText        String?
+  paymentNote             String?
+  updatedById             String?
+  updatedAt               DateTime    @updatedAt @db.Timestamptz(3)
+
+  @@map("booking_policies")
+}
+
+/// CMS-lite blocks (`home.hero`, `home.experience`, …). `draft` powers preview-before-publish.
+model WebsiteContent {
+  id          String    @id @default(cuid())
+  key         String    @unique
+  title       String?
+  published   Json
+  draft       Json?
+  publishedAt DateTime? @db.Timestamptz(3)
+  updatedById String?
+  updatedAt   DateTime  @updatedAt @db.Timestamptz(3)
+
+  @@map("website_content")
+}
+
+/// Media library entry. `storage = "local"` means a file bundled in /public or stored on the
+/// server's disk; swap the storage provider (see `lib/storage`) for S3 / Cloudinary later.
+model MediaAsset {
+  id                String    @id @default(cuid())
+  kind              MediaKind @default(PHOTO)
+  url               String
+  storage           String    @default("local")
+  alt               String
+  caption           String?
+  credit            String?
+  isDemoPlaceholder Boolean   @default(true)
+  width             Int?
+  height            Int?
+  mimeType          String?
+  sizeBytes         Int?
+  uploadedById      String?
+  createdAt         DateTime  @default(now()) @db.Timestamptz(3)
+
+  categories     ServiceCategory[]
+  services       Service[]
+  portraits      EmployeeProfile[]
+  offers         Offer[]
+  galleryItems   GalleryItem[]     @relation("GalleryAsset")
+  galleryBefores GalleryItem[]     @relation("GalleryBeforeAsset")
+
+  @@map("media_assets")
+}
+
+model GalleryItem {
+  id            String          @id @default(cuid())
+  title         String
+  caption       String?
+  category      GalleryCategory
+  assetId       String
+  asset         MediaAsset      @relation("GalleryAsset", fields: [assetId], references: [id])
+  /// For BEFORE_AFTER items: the "before" image (the main asset is the "after").
+  beforeAssetId String?
+  beforeAsset   MediaAsset?     @relation("GalleryBeforeAsset", fields: [beforeAssetId], references: [id])
+  isPublished   Boolean         @default(true)
+  isFeatured    Boolean         @default(false)
+  sortOrder     Int             @default(0)
+  createdAt     DateTime        @default(now()) @db.Timestamptz(3)
+
+  @@index([isPublished, sortOrder])
+  @@map("gallery_items")
+}
+
+model Resource {
+  id       String       @id @default(cuid())
+  branchId String
+  branch   SalonBranch  @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  name     String
+  type     ResourceType
+  isActive Boolean      @default(true)
+
+  bookings BookingResource[]
+
+  @@index([branchId, type])
+  @@map("resources")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Services
+// ─────────────────────────────────────────────────────────────────────────────
+
+model ServiceCategory {
+  id          String     @id @default(cuid())
+  slug        String     @unique
+  name        String
+  tagline     String?
+  description String?
+  imageId     String?
+  image       MediaAsset? @relation(fields: [imageId], references: [id], onDelete: SetNull)
+  sortOrder   Int        @default(0)
+  isActive    Boolean    @default(true)
+  createdAt   DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime   @updatedAt @db.Timestamptz(3)
+
+  services Service[]
+  offers   Offer[]
+
+  @@map("service_categories")
+}
+
+model Service {
+  id               String           @id @default(cuid())
+  slug             String           @unique
+  categoryId       String
+  category         ServiceCategory  @relation(fields: [categoryId], references: [id])
+  name             String
+  shortDescription String
+  description      String
+  durationMinutes  Int
+  /// Starting price in INR (sample price in the demo).
+  priceFrom        Decimal          @db.Decimal(12, 2)
+  imageId          String?
+  image            MediaAsset?      @relation(fields: [imageId], references: [id], onDelete: SetNull)
+  audience         ServiceAudience  @default(EVERYONE)
+  requiredResource ResourceType?
+  requiresApproval Boolean          @default(false)
+  isActive         Boolean          @default(true)
+  isFeatured       Boolean          @default(false)
+  isSignature      Boolean          @default(false)
+  signatureStory   String?
+  tags             String[]
+  sortOrder        Int              @default(0)
+  isDemoPrice      Boolean          @default(true)
+  createdAt        DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime         @updatedAt @db.Timestamptz(3)
+
+  staff            StaffService[]
+  bookingServices  BookingService[]
+  offerServices    OfferService[]
+  favourites       FavouriteService[]
+  pairingsFrom     ServicePairing[] @relation("PairingFrom")
+  pairingsTo       ServicePairing[] @relation("PairingTo")
+
+  @@index([categoryId, sortOrder])
+  @@index([isActive])
+  @@map("services")
+}
+
+/// Which employees are qualified to perform which services (drives booking eligibility).
+model StaffService {
+  employeeId String
+  serviceId  String
+  employee   EmployeeProfile @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  service    Service         @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  createdAt  DateTime        @default(now()) @db.Timestamptz(3)
+
+  @@id([employeeId, serviceId])
+  @@index([serviceId])
+  @@map("staff_services")
+}
+
+/// Transparent, rule-based "pairs well with" recommendations.
+model ServicePairing {
+  id            String  @id @default(cuid())
+  fromServiceId String
+  toServiceId   String
+  from          Service @relation("PairingFrom", fields: [fromServiceId], references: [id], onDelete: Cascade)
+  to            Service @relation("PairingTo", fields: [toServiceId], references: [id], onDelete: Cascade)
+  reason        String
+  weight        Int     @default(1)
+
+  @@unique([fromServiceId, toServiceId])
+  @@map("service_pairings")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Employees, scheduling, attendance, leave
+// ─────────────────────────────────────────────────────────────────────────────
+
+model EmployeeProfile {
+  id                    String           @id @default(cuid())
+  userId                String           @unique
+  user                  User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  branchId              String
+  branch                SalonBranch      @relation(fields: [branchId], references: [id])
+  employeeCode          String           @unique
+  jobTitle              String
+  bio                   String?
+  specialties           String[]
+  /// Service category slugs this person is skilled in.
+  skillCategories       String[]
+  languages             String[]
+  yearsExperience       Int?
+  employmentStatus      EmploymentStatus @default(ACTIVE)
+  employmentType        EmploymentType   @default(FULL_TIME)
+  startDate             DateTime         @db.Date
+  endDate               DateTime?        @db.Date
+  emergencyContactName  String?
+  emergencyContactPhone String?
+  /// Appears on the public website and can receive bookings.
+  isBookable            Boolean          @default(true)
+  isFeatured            Boolean          @default(false)
+  displayOrder          Int              @default(0)
+  portraitId            String?
+  portrait              MediaAsset?      @relation(fields: [portraitId], references: [id], onDelete: SetNull)
+  instagramHandle       String?
+  createdAt             DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt             DateTime         @updatedAt @db.Timestamptz(3)
+
+  services         StaffService[]
+  availability     StaffAvailability[]
+  breaks           StaffBreak[]
+  shifts           Shift[]
+  attendance       Attendance[]
+  leaveRequests    LeaveRequest[]
+  salaryStructure  SalaryStructure?
+  salaryRecords    SalaryRecord[]
+  bookings         Booking[]
+  favouritedBy     FavouriteStylist[]
+
+  @@index([branchId, employmentStatus])
+  @@index([isBookable, displayOrder])
+  @@map("employee_profiles")
+}
+
+/// Recurring weekly working window. Several rows per weekday allow split shifts.
+model StaffAvailability {
+  id         String          @id @default(cuid())
+  employeeId String
+  employee   EmployeeProfile @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  weekday    Int
+  startTime  String
+  endTime    String
+  isActive   Boolean         @default(true)
+
+  @@index([employeeId, weekday])
+  @@map("staff_availability")
+}
+
+/// Recurring (`weekday`) or one-off (`date`) unavailable window, e.g. lunch.
+model StaffBreak {
+  id         String          @id @default(cuid())
+  employeeId String
+  employee   EmployeeProfile @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  weekday    Int?
+  date       DateTime?       @db.Date
+  startTime  String
+  endTime    String
+  label      String          @default("Break")
+
+  @@index([employeeId, weekday])
+  @@index([employeeId, date])
+  @@map("staff_breaks")
+}
+
+/// Date-specific override of the weekly pattern (extra shift, swapped shift, or day off via type OFF).
+model Shift {
+  id          String          @id @default(cuid())
+  employeeId  String
+  employee    EmployeeProfile @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  branchId    String
+  branch      SalonBranch     @relation(fields: [branchId], references: [id])
+  date        DateTime        @db.Date
+  startTime   String
+  endTime     String
+  type        ShiftType       @default(REGULAR)
+  notes       String?
+  createdById String?
+  createdAt   DateTime        @default(now()) @db.Timestamptz(3)
+
+  @@unique([employeeId, date, startTime])
+  @@index([date])
+  @@map("shifts")
+}
+
+model Attendance {
+  id           String           @id @default(cuid())
+  employeeId   String
+  employee     EmployeeProfile  @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  branchId     String
+  branch       SalonBranch      @relation(fields: [branchId], references: [id])
+  date         DateTime         @db.Date
+  status       AttendanceStatus
+  checkInAt    DateTime?        @db.Timestamptz(3)
+  checkOutAt   DateTime?        @db.Timestamptz(3)
+  lateMinutes  Int              @default(0)
+  source       AttendanceSource @default(MANAGER)
+  note         String?
+  recordedById String?
+  createdAt    DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime         @updatedAt @db.Timestamptz(3)
+
+  @@unique([employeeId, branchId, date])
+  @@index([date, status])
+  @@map("attendance")
+}
+
+model LeaveRequest {
+  id           String          @id @default(cuid())
+  employeeId   String
+  employee     EmployeeProfile @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  type         LeaveType
+  startDate    DateTime        @db.Date
+  endDate      DateTime        @db.Date
+  reason       String
+  status       LeaveStatus     @default(PENDING)
+  decidedById  String?
+  decidedAt    DateTime?       @db.Timestamptz(3)
+  decisionNote String?
+  createdAt    DateTime        @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime        @updatedAt @db.Timestamptz(3)
+
+  @@index([employeeId, status])
+  @@index([startDate, endDate])
+  @@map("leave_requests")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Salary & payroll (fictional demo data — no real disbursement)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model SalaryStructure {
+  id          String          @id @default(cuid())
+  employeeId  String          @unique
+  employee    EmployeeProfile @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  baseSalary  Decimal         @db.Decimal(12, 2)
+  /// Allowance applied automatically when a monthly record is first drafted.
+  fixedAllowance Decimal      @default(0) @db.Decimal(12, 2)
+  effectiveFrom  DateTime     @db.Date
+  notes       String?
+  updatedById String?
+  updatedAt   DateTime        @updatedAt @db.Timestamptz(3)
+
+  @@map("salary_structures")
+}
+
+model PayrollPeriod {
+  id        String              @id @default(cuid())
+  year      Int
+  month     Int
+  startDate DateTime            @db.Date
+  endDate   DateTime            @db.Date
+  status    PayrollPeriodStatus @default(OPEN)
+  createdAt DateTime            @default(now()) @db.Timestamptz(3)
+
+  records SalaryRecord[]
+
+  @@unique([year, month])
+  @@map("payroll_periods")
+}
+
+model SalaryRecord {
+  id            String          @id @default(cuid())
+  periodId      String
+  period        PayrollPeriod   @relation(fields: [periodId], references: [id], onDelete: Cascade)
+  employeeId    String
+  employee      EmployeeProfile @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  baseSalary    Decimal         @db.Decimal(12, 2)
+  allowances    Decimal         @default(0) @db.Decimal(12, 2)
+  bonuses       Decimal         @default(0) @db.Decimal(12, 2)
+  deductions    Decimal         @default(0) @db.Decimal(12, 2)
+  /// Base + Allowances + Bonuses − Deductions (computed server-side from adjustments).
+  netPayable    Decimal         @db.Decimal(12, 2)
+  workingDays   Int             @default(0)
+  presentDays   Decimal         @default(0) @db.Decimal(4, 1)
+  absentDays    Decimal         @default(0) @db.Decimal(4, 1)
+  status        PayrollStatus   @default(PENDING)
+  note          String?
+  updatedById   String?
+  reviewedById  String?
+  reviewedAt    DateTime?       @db.Timestamptz(3)
+  paidMarkedAt  DateTime?       @db.Timestamptz(3)
+  createdAt     DateTime        @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime        @updatedAt @db.Timestamptz(3)
+
+  adjustments SalaryAdjustment[]
+
+  @@unique([periodId, employeeId])
+  @@index([employeeId])
+  @@map("salary_records")
+}
+
+model SalaryAdjustment {
+  id          String           @id @default(cuid())
+  recordId    String
+  record      SalaryRecord     @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  type        AdjustmentType
+  source      AdjustmentSource @default(MANUAL)
+  label       String
+  amount      Decimal          @db.Decimal(12, 2)
+  note        String?
+  createdById String?
+  createdAt   DateTime         @default(now()) @db.Timestamptz(3)
+
+  @@index([recordId])
+  @@map("salary_adjustments")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Customers, bookings, offers, loyalty
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A person the salon serves. `userId` is null for walk-ins / guests until they create an account.
+model CustomerProfile {
+  id                String      @id @default(cuid())
+  userId            String?     @unique
+  user              User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  branchId          String?
+  branch            SalonBranch? @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  fullName          String
+  email             String?     @unique
+  phone             String?
+  dateOfBirth       DateTime?   @db.Date
+  /// Visible to authorised staff only.
+  staffNotes        String?
+  /// Voluntarily provided by the customer: hair/skin notes, preferred days, preferred services…
+  beautyPreferences Json?
+  marketingOptIn    Boolean     @default(false)
+  createdAt         DateTime    @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime    @updatedAt @db.Timestamptz(3)
+
+  bookings          Booking[]
+  favouriteServices FavouriteService[]
+  favouriteStylists FavouriteStylist[]
+  loyalty           LoyaltyAccount?
+  redemptions       OfferRedemption[]
+  enquiries         SpecialOccasionEnquiry[]
+
+  @@index([fullName])
+  @@index([phone])
+  @@map("customer_profiles")
+}
+
+model FavouriteService {
+  customerId String
+  serviceId  String
+  customer   CustomerProfile @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  service    Service         @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  createdAt  DateTime        @default(now()) @db.Timestamptz(3)
+
+  @@id([customerId, serviceId])
+  @@map("favourite_services")
+}
+
+model FavouriteStylist {
+  customerId String
+  employeeId String
+  customer   CustomerProfile @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  employee   EmployeeProfile @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  createdAt  DateTime        @default(now()) @db.Timestamptz(3)
+
+  @@id([customerId, employeeId])
+  @@map("favourite_stylists")
+}
+
+model Booking {
+  id                String          @id @default(cuid())
+  /// Human friendly reference shown to customers, e.g. SFS-7K3M9Q
+  reference         String          @unique
+  branchId          String
+  branch            SalonBranch     @relation(fields: [branchId], references: [id])
+  customerId        String
+  customer          CustomerProfile @relation(fields: [customerId], references: [id])
+  staffId           String
+  staff             EmployeeProfile @relation(fields: [staffId], references: [id])
+  status            BookingStatus   @default(CONFIRMED)
+  source            BookingSource   @default(ONLINE)
+  startsAt          DateTime        @db.Timestamptz(3)
+  endsAt            DateTime        @db.Timestamptz(3)
+  /// endsAt + buffer. The range [startsAt, blockedUntil) is what the exclusion constraint protects.
+  blockedUntil      DateTime        @db.Timestamptz(3)
+  durationMinutes   Int
+  bufferMinutes     Int             @default(0)
+  subtotal          Decimal         @db.Decimal(12, 2)
+  discountAmount    Decimal         @default(0) @db.Decimal(12, 2)
+  total             Decimal         @db.Decimal(12, 2)
+  offerId           String?
+  offer             Offer?          @relation(fields: [offerId], references: [id], onDelete: SetNull)
+  couponCode        String?
+  paymentMethod     PaymentMethod   @default(PAY_AT_SALON)
+  paymentStatus     PaymentStatus   @default(UNPAID)
+  paidAt            DateTime?       @db.Timestamptz(3)
+  customerNote      String?
+  /// Visible to authorised staff only.
+  internalNote      String?
+  requestedAnyStaff Boolean         @default(false)
+  rescheduleCount   Int             @default(0)
+  cancelledAt       DateTime?       @db.Timestamptz(3)
+  cancelledById     String?
+  cancellationReason String?
+  checkedInAt       DateTime?       @db.Timestamptz(3)
+  startedAt         DateTime?       @db.Timestamptz(3)
+  completedAt       DateTime?       @db.Timestamptz(3)
+  createdById       String?
+  createdAt         DateTime        @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime        @updatedAt @db.Timestamptz(3)
+
+  services   BookingService[]
+  history    BookingStatusHistory[]
+  resources  BookingResource[]
+  redemption OfferRedemption?
+  loyaltyTxns LoyaltyTransaction[]
+
+  @@index([staffId, startsAt])
+  @@index([customerId, startsAt])
+  @@index([branchId, startsAt])
+  @@index([status, startsAt])
+  @@index([updatedAt])
+  @@map("bookings")
+}
+
+model BookingService {
+  id              String  @id @default(cuid())
+  bookingId       String
+  booking         Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  serviceId       String
+  service         Service @relation(fields: [serviceId], references: [id])
+  /// Snapshots keep history stable when the catalogue changes.
+  nameSnapshot    String
+  durationMinutes Int
+  price           Decimal @db.Decimal(12, 2)
+  sortOrder       Int     @default(0)
+
+  @@index([bookingId])
+  @@index([serviceId])
+  @@map("booking_services")
+}
+
+model BookingStatusHistory {
+  id          String         @id @default(cuid())
+  bookingId   String
+  booking     Booking        @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  fromStatus  BookingStatus?
+  toStatus    BookingStatus
+  changedById String?
+  changedByName String?
+  note        String?
+  createdAt   DateTime       @default(now()) @db.Timestamptz(3)
+
+  @@index([bookingId, createdAt])
+  @@map("booking_status_history")
+}
+
+/// Rooms / stations held by a booking. Times are denormalised so PostgreSQL can enforce
+/// "no resource is double-booked" with an exclusion constraint.
+model BookingResource {
+  id           String   @id @default(cuid())
+  bookingId    String
+  booking      Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  resourceId   String
+  resource     Resource @relation(fields: [resourceId], references: [id])
+  startsAt     DateTime @db.Timestamptz(3)
+  blockedUntil DateTime @db.Timestamptz(3)
+
+  @@unique([bookingId, resourceId])
+  @@index([resourceId, startsAt])
+  @@map("booking_resources")
+}
+
+model Offer {
+  id                   String        @id @default(cuid())
+  slug                 String        @unique
+  title                String
+  subtitle             String?
+  description          String
+  terms                String?
+  badge                String?
+  /// Optional coupon code. Offers without a code auto-apply when eligible.
+  code                 String?       @unique
+  type                 OfferType
+  value                Decimal       @db.Decimal(12, 2)
+  maxDiscount          Decimal?      @db.Decimal(12, 2)
+  minSpend             Decimal?      @db.Decimal(12, 2)
+  audience             OfferAudience @default(EVERYONE)
+  firstVisitOnly       Boolean       @default(false)
+  categoryId           String?
+  category             ServiceCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  startsAt             DateTime      @db.Timestamptz(3)
+  endsAt               DateTime      @db.Timestamptz(3)
+  status               OfferStatus   @default(DRAFT)
+  usageLimit           Int?
+  perCustomerLimit     Int           @default(1)
+  redemptionCount      Int           @default(0)
+  isFeatured           Boolean       @default(false)
+  isDemoExample        Boolean       @default(true)
+  imageId              String?
+  image                MediaAsset?   @relation(fields: [imageId], references: [id], onDelete: SetNull)
+  createdById          String?
+  updatedById          String?
+  publishedAt          DateTime?     @db.Timestamptz(3)
+  createdAt            DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt            DateTime      @updatedAt @db.Timestamptz(3)
+
+  services    OfferService[]
+  redemptions OfferRedemption[]
+  bookings    Booking[]
+
+  @@index([status, startsAt, endsAt])
+  @@map("offers")
+}
+
+model OfferService {
+  offerId   String
+  serviceId String
+  offer     Offer   @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  service   Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@id([offerId, serviceId])
+  @@map("offer_services")
+}
+
+model OfferRedemption {
+  id             String           @id @default(cuid())
+  offerId        String
+  offer          Offer            @relation(fields: [offerId], references: [id])
+  bookingId      String           @unique
+  booking        Booking          @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  customerId     String
+  customer       CustomerProfile  @relation(fields: [customerId], references: [id])
+  discountAmount Decimal          @db.Decimal(12, 2)
+  status         RedemptionStatus @default(APPLIED)
+  createdAt      DateTime         @default(now()) @db.Timestamptz(3)
+
+  @@index([offerId, customerId])
+  @@map("offer_redemptions")
+}
+
+model LoyaltyAccount {
+  id             String          @id @default(cuid())
+  customerId     String          @unique
+  customer       CustomerProfile @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  pointsBalance  Int             @default(0)
+  lifetimePoints Int             @default(0)
+  tier           LoyaltyTier     @default(STARLIGHT)
+  createdAt      DateTime        @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime        @updatedAt @db.Timestamptz(3)
+
+  transactions LoyaltyTransaction[]
+
+  @@map("loyalty_accounts")
+}
+
+model LoyaltyTransaction {
+  id           String         @id @default(cuid())
+  accountId    String
+  account      LoyaltyAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  type         LoyaltyTxnType
+  points       Int
+  balanceAfter Int
+  description  String
+  bookingId    String?
+  booking      Booking?       @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  createdAt    DateTime       @default(now()) @db.Timestamptz(3)
+
+  @@unique([bookingId, type])
+  @@index([accountId, createdAt])
+  @@map("loyalty_transactions")
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      NotificationType
+  title     String
+  body      String
+  href      String?
+  readAt    DateTime?        @db.Timestamptz(3)
+  createdAt DateTime         @default(now()) @db.Timestamptz(3)
+
+  @@index([userId, readAt, createdAt])
+  @@map("notifications")
+}
+
+model SpecialOccasionEnquiry {
+  id           String          @id @default(cuid())
+  customerId   String?
+  customer     CustomerProfile? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  type         EnquiryType
+  name         String
+  email        String
+  phone        String
+  eventDate    DateTime?       @db.Date
+  groupSize    Int?
+  /// Free-text list of services of interest.
+  interest     String?
+  message      String?
+  status       EnquiryStatus   @default(NEW)
+  assignedToId String?
+  handlerNote  String?
+  createdAt    DateTime        @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime        @updatedAt @db.Timestamptz(3)
+
+  @@index([status, createdAt])
+  @@map("special_occasion_enquiries")
+}

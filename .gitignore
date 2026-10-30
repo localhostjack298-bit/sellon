@@ -1,0 +1,21 @@
+# dependencies
+/node_modules
+# next.js
+/.next/
+/out/
+next-env.d.ts
+# generated Prisma client (re-created by `npm install` / `prisma generate`)
+/src/generated/
+# env files — never commit real secrets
+.env
+.env.*
+!.env.example
+# local runtime storage (uploads in demo mode)
+/storage/uploads/*
+!/storage/uploads/.gitkeep
+# misc
+.DS_Store
+*.log
+*.tsbuildinfo
+coverage
+.vitest-cache
